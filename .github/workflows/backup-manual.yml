@@ -4,18 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       backup_type:
-        description: 'What to backup'
+        description: 'Backup type'
         required: true
-        default: 'database'
+        default: 'full'
         type: choice
         options:
-          - database
           - full
-          - configs-only
-      commit_message:
-        description: 'Commit message'
-        required: false
-        default: 'manual backup'
+          - database-only
 
 jobs:
   backup-and-push:
@@ -25,73 +20,88 @@ jobs:
       - name: Checkout backup repo
         uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Install SSH key
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Setup GPG
+      - name: Get timestamp
+        id: ts
+        run: echo "T=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Create local backup directory
+        run: mkdir -p /tmp/backup
+
+      - name: Backup Database
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gnupg
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch || true
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo docker exec recepio-postgres pg_dump -U recepio recepio" > /tmp/backup/database.sql
+          gzip /tmp/backup/database.sql
 
-      - name: Run backup on server
-        id: backup
+      - name: Backup Nginx Configs
         run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 << 'ENDSSH'
-          set -e
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/api.recepio.io" > /tmp/backup/nginx-api.conf
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/app.recepio.io" > /tmp/backup/nginx-app.conf
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/admin.recepio.io" > /tmp/backup/nginx-admin.conf
 
-          mkdir -p /opt/recepio-backups/{encrypted,reports,logs}
-          cd /opt/recepio-backups
+      - name: Create archive
+        run: |
+          cd /tmp/backup
+          tar -czf /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz *
+          ls -lh /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz
 
-          # Database backup
-          DB_FILE="/tmp/db-backup-$(date +%Y%m%d_%H%M%S).sql.gz"
-          PGPASSWORD='RecepioApp2026' pg_dump -h localhost -U recepio -d recepio --no-owner --no-acl | gzip > "$DB_FILE"
+      - name: Import GPG Key
+        run: echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
 
-          # Encrypt
+      - name: Encrypt backup
+        run: |
           gpg --batch --yes --trust-model always \
-            --encrypt --recipient recepio-backup@recepio.io \
-            --output "encrypted/db-$(date +%Y-%m-%d).sql.gz.gpg" \
-            "$DB_FILE" || echo "GPG encryption failed, storing compressed only"
+              --encrypt --recipient backup@recepio.io \
+              --output /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg \
+              /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz
+          ls -lh /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg
 
-          # Create report
-          echo "{\"timestamp\": \"$(date -Iseconds)\", \"type\": \"manual\", \"status\": \"success\"}" > "reports/manual-$(date +%Y-%m-%d).json"
-
-          # Cleanup temp
-          rm -f "$DB_FILE"
-
-          # Show results
-          ls -la encrypted/*.gpg 2>/dev/null | tail -5
-          ENDSSH
-
-      - name: Pull encrypted files from server
+      - name: Check encrypted file
         run: |
-          mkdir -p encrypted reports logs
-          scp -o StrictHostKeyChecking=no ubuntu@63.181.126.178:/opt/recepio-backups/encrypted/*.gpg encrypted/ 2>/dev/null || true
-          scp -o StrictHostKeyChecking=no ubuntu@63.181.126.178:/opt/recepio-backups/reports/*.json reports/ 2>/dev/null || true
+          echo "=== Verifying encrypted file ==="
+          file /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg
+          echo "Size: $(stat -c%s /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg) bytes"
 
-      - name: Check and commit
+      - name: Commit to repo
         run: |
           git config user.name "Backup Bot"
           git config user.email "backup@recepio.io"
 
-          git add encrypted/*.gpg reports/*.json 2>/dev/null || true
+          # Create directory for this backup
+          mkdir -p manual/${{ steps.ts.outputs.T }}
+          cp /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg manual/${{ steps.ts.outputs.T }}/
 
-          if git diff --staged --quiet; then
-            echo "No new backups to commit"
-          else
-            git commit -m "${{ inputs.commit_message }} - $(date +%Y-%m-%d)"
-            git push
-            echo "✅ Backup pushed to GitHub successfully!"
-          fi
+          # Create manifest
+          cat > manual/${{ steps.ts.outputs.T }}/MANIFEST.md << EOF
+          # Manual Backup - ${{ steps.ts.outputs.T }}
 
-      - name: List current backups
+          **Type:** ${{ inputs.backup_type }}
+          **Timestamp:** $(date -Iseconds)
+
+          ## Contents
+          - Database (PostgreSQL)
+          - Nginx configs (3 sites)
+
+          ## Restore
+          \`\`\`bash
+          gpg --decrypt backup_${{ steps.ts.outputs.T }}.tar.gz.gpg | tar -xzf -
+          \`\`\`
+          EOF
+
+          git add -A
+          git commit -m "Manual backup - ${{ steps.ts.outputs.T }}"
+          git push origin master
+
+      - name: Summary
         run: |
           echo "============================================"
-          echo "Current Backups in Repository"
+          echo "✅ BACKUP COMPLETED SUCCESSFULLY"
           echo "============================================"
-          ls -la encrypted/ 2>/dev/null || echo "No encrypted backups yet"
           echo ""
-          echo "Total size: $(du -sh encrypted/ 2>/dev/null | cut -f1)"
-          echo "Total files: $(ls encrypted/*.gpg 2>/dev/null | wc -l)"
+          echo "Timestamp: ${{ steps.ts.outputs.T }}"
+          echo "Location: manual/${{ steps.ts.outputs.T }}"
+          echo "URL: https://github.com/RecepioHQ/recepio-backups/tree/master/manual/${{ steps.ts.outputs.T }}"
