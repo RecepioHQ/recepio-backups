@@ -1,0 +1,72 @@
+services:
+  rails:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot-rails
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=chatwoot_production
+      - POSTGRES_USER=chatwoot_prod
+      - POSTGRES_PASSWORD=ChatwootDB2026Secure!
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY_BASE=af9fd6fd5d4e1d9b044cd938a3f77d6ece087429de65d5be20cba78558597146afb6772f8488bcaa0cc615c88ea1905dd7a001f99d33b57572a2c78a59183497
+      - ENCRYPTION_KEY=7c3174b77ff5012b63565daa3c05b436e5009014d450bfc5da1d6e1fba0edd4c
+      - FRONTEND_URL=https://chatwoot.recepio.io
+      - BACKEND_URL=https://chatwoot.recepio.io
+      - ENABLE_ACCOUNT_SIGNUP=true
+    volumes:
+      - storage:/app/storage
+    ports:
+      - "127.0.0.1:3010:3000"
+    command: >
+      sh -c "mkdir -p tmp/pids && bundle exec rails db:prepare && bundle exec puma -C config/puma.rb"
+
+  sidekiq:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot-sidekiq
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - RAILS_ENV=production
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=chatwoot_production
+      - POSTGRES_USER=chatwoot_prod
+      - POSTGRES_PASSWORD=ChatwootDB2026Secure!
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY_BASE=af9fd6fd5d4e1d9b044cd938a3f77d6ece087429de65d5be20cba78558597146afb6772f8488bcaa0cc615c88ea1905dd7a001f99d33b57572a2c78a59183497
+      - ENCRYPTION_KEY=7c3174b77ff5012b63565daa3c05b436e5009014d450bfc5da1d6e1fba0edd4c
+    command: sh -c "mkdir -p tmp/pids && bundle exec sidekiq -C config/sidekiq.yml"
+
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: chatwoot-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=chatwoot_production
+      - POSTGRES_USER=chatwoot_prod
+      - POSTGRES_PASSWORD=ChatwootDB2026Secure!
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5434:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatwoot-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6381:6379"
+
+volumes:
+  storage:
+  postgres-data:
+  redis-data:

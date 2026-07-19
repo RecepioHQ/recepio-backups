@@ -1,0 +1,251 @@
+# Recepio Docker Compose - Development Configuration
+# Version: 3.9
+# Usage: docker-compose up -d
+
+version: "3.9"
+
+services:
+  # ===========================================
+  # PostgreSQL with pgvector Extension
+  # ===========================================
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: recepio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-recepio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recepio_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-recepio}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-recepio} -d ${POSTGRES_DB:-recepio}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - recepio-network
+
+  # ===========================================
+  # Redis for Celery & Caching
+  # ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: recepio-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - recepio-network
+
+  # ===========================================
+  # FastAPI Application (Development)
+  # ===========================================
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: recepio-api
+    restart: unless-stopped
+    environment:
+      # Application
+      APP_NAME: ${APP_NAME:-Recepio API}
+      APP_VERSION: ${APP_VERSION:-2.0.0}
+      DEBUG: ${DEBUG:-true}
+      API_PREFIX: ${API_PREFIX:-/api/v1}
+      
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-recepio}:${POSTGRES_PASSWORD:-recepio_dev_password}@postgres:5432/${POSTGRES_DB:-recepio}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-recepio}:${POSTGRES_PASSWORD:-recepio_dev_password}@postgres:5432/${POSTGRES_DB:-recepio}
+      
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      
+      # JWT Authentication
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_production_at_least_32_chars}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      
+      # Encryption
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-dev_32_byte_encryption_key}
+      
+      # AI - Claude
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-3-5-sonnet-20241022}
+      CLAUDE_MAX_TOKENS: ${CLAUDE_MAX_TOKENS:-1024}
+      
+      # STT - OpenAI Whisper
+      STT_API_KEY: ${STT_API_KEY:-}
+      STT_MODEL: ${STT_MODEL:-whisper-1}
+      
+      # TTS
+      TTS_DEFAULT_VOICE: ${TTS_DEFAULT_VOICE:-ar-SA-HamedNeural}
+      TTS_FALLBACK_API_KEY: ${TTS_FALLBACK_API_KEY:-}
+      
+      # Meta / WhatsApp
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      WHATSAPP_WEBHOOK_SECRET: ${WHATSAPP_WEBHOOK_SECRET:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      
+      # Google Calendar
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_CALENDAR_REDIRECT_URI: ${GOOGLE_CALENDAR_REDIRECT_URI:-http://localhost:8000/api/v1/calendar/callback}
+      
+      # Zoho Mail
+      ZOHO_CLIENT_ID: ${ZOHO_CLIENT_ID:-}
+      ZOHO_CLIENT_SECRET: ${ZOHO_CLIENT_SECRET:-}
+      
+      # PayTabs Payment
+      PAYTABS_PROFILE_ID: ${PAYTABS_PROFILE_ID:-}
+      PAYTABS_SERVER_KEY: ${PAYTABS_SERVER_KEY:-}
+      PAYTABS_BASE_URL: ${PAYTABS_BASE_URL:-https://secure.paytabs.com}
+      
+      # Backup - Backblaze B2
+      B2_KEY_ID: ${B2_KEY_ID:-}
+      B2_APPLICATION_KEY: ${B2_APPLICATION_KEY:-}
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:8000,https://app.recepio.io}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Hot reload in development
+      - ../apps/api/app:/app/app:ro
+      - ../apps/api/alembic:/app/alembic:ro
+    networks:
+      - recepio-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ===========================================
+  # Celery Worker
+  # ===========================================
+  celery-worker:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: recepio-celery-worker
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-recepio}:${POSTGRES_PASSWORD:-recepio_dev_password}@postgres:5432/${POSTGRES_DB:-recepio}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-recepio}:${POSTGRES_PASSWORD:-recepio_dev_password}@postgres:5432/${POSTGRES_DB:-recepio}
+      REDIS_URL: redis://redis:6379/0
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../apps/api/app:/app/app:ro
+    networks:
+      - recepio-network
+
+  # ===========================================
+  # Celery Beat (Scheduler)
+  # ===========================================
+  celery-beat:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: recepio-celery-beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-recepio}:${POSTGRES_PASSWORD:-recepio_dev_password}@postgres:5432/${POSTGRES_DB:-recepio}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../apps/api/app:/app/app:ro
+    networks:
+      - recepio-network
+
+  # ===========================================
+  # Flower - Celery Monitoring UI
+  # ===========================================
+  flower:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: recepio-flower
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app flower --port=5555
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - celery-worker
+    networks:
+      - recepio-network
+
+  # ===========================================
+  # Caddy Reverse Proxy (Development)
+  # ===========================================
+  caddy:
+    image: caddy:2-alpine
+    container_name: recepio-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks:
+      - recepio-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+networks:
+  recepio-network:
+    driver: bridge

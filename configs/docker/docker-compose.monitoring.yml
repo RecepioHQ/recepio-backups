@@ -1,0 +1,253 @@
+version: '3.8'
+networks:
+  monitoring:
+    driver: bridge
+  recepio-network:
+    external: true
+volumes:
+  prometheus_data: null
+  grafana_data: null
+  alertmanager_data: null
+services:
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: recepio-prometheus
+    restart: unless-stopped
+    command:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=30d
+    - --storage.tsdb.retention.size=10GB
+    - --web.console.libraries=/etc/prometheus/console_libraries
+    - --web.console.templates=/etc/prometheus/consoles
+    - --web.enable-lifecycle
+    - --web.enable-admin-api
+    - --web.external-url=https://monitoring.recepio.com/prometheus
+    volumes:
+    - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ./monitoring/alert-rules.yml:/etc/prometheus/rules/alert-rules.yml:ro
+    - prometheus_data:/prometheus
+    ports:
+    - 127.0.0.1:9090:9090
+    networks:
+    - monitoring
+    - recepio-network
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://localhost:9090/prometheus/-/healthy
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+    - alertmanager
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: recepio-grafana
+    restart: unless-stopped
+    environment:
+    - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+    - GF_USERS_ALLOW_SIGN_UP=false
+    - GF_SERVER_ROOT_URL=https://monitoring.recepio.com/grafana
+    - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-worldmap-panel
+    - GF_UNIFIED_ALERTING_ENABLED=true
+    - GF_FEATURE_TOGGLES_ENABLE=ngalert
+    - GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=false
+    - GF_ALERTING_ENABLED=false
+    volumes:
+    - grafana_data:/var/lib/grafana
+    - ./monitoring/dashboards:/etc/grafana/provisioning/dashboards:ro
+    - ./monitoring/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+    - 127.0.0.1:3000:3000
+    networks:
+    - monitoring
+    - recepio-network
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -f http://localhost:3000/api/health || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+    - prometheus
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: recepio-alertmanager
+    restart: unless-stopped
+    command:
+    - --config.file=/etc/alertmanager/alertmanager.yml
+    - --storage.path=/alertmanager
+    - --web.external-url=https://monitoring.recepio.com/alertmanager
+    - --cluster.listen-address=
+    volumes:
+    - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    - alertmanager_data:/alertmanager
+    ports:
+    - 127.0.0.1:9093:9093
+    networks:
+    - monitoring
+    - recepio-network
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://localhost:9093/alertmanager/-/healthy
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: recepio-node-exporter
+    restart: unless-stopped
+    command:
+    - --path.procfs=/host/proc
+    - --path.sysfs=/host/sys
+    - --path.rootfs=/rootfs
+    - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)
+    - --collector.cpu
+    - --collector.diskstats
+    - --collector.filesystem
+    - --collector.meminfo
+    - --collector.netdev
+    - --collector.systemd
+    - --no-collector.arp
+    volumes:
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/rootfs:ro
+    ports:
+    - 127.0.0.1:9100:9100
+    networks:
+    - monitoring
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.12.1
+    container_name: recepio-postgres-exporter
+    restart: unless-stopped
+    environment:
+    - DATA_SOURCE_NAME=postgresql://postgres:changeme@chatwoot-postgres:5432/chatwoot_rails_production?sslmode=disable
+    - PG_EXPORTER_INCLUDE_DATABASES=recepio
+    - PG_EXPORTER_AUTO_DISCOVER_DATABASES=false
+    - PG_EXPORTER_DISABLE_DEFAULT_METRICS=false
+    - PG_EXPORTER_DISABLE_SETTINGS_METRICS=false
+    ports:
+    - 127.0.0.1:9187:9187
+    networks:
+    - monitoring
+    - recepio-network
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.55.0
+    container_name: recepio-redis-exporter
+    restart: unless-stopped
+    environment:
+    - REDIS_ADDR=redis://chatwoot-redis:6379
+    - REDIS_EXPORTER_SKIP_TLS_VERIFICATION=true
+    - REDIS_EXPORTER_INCL_SYSTEM_METRICS=true
+    - REDIS_EXPORTER_SET_CLIENT_NAME=true
+    - REDIS_EXPORTER_CHECK_KEY_GROUPS=*
+    - REDIS_EXPORTER_COUNT_KEYS=*
+    ports:
+    - 127.0.0.1:9121:9121
+    networks:
+    - monitoring
+    - recepio-network
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: recepio-cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+    - /dev/kmsg:/dev/kmsg
+    volumes:
+    - /:/rootfs:ro
+    - /var/run:/var/run:ro
+    - /sys:/sys:ro
+    - /var/lib/docker:/var/lib/docker:ro
+    - /cgroup:/cgroup:ro
+    ports:
+    - 127.0.0.1:8081:8080
+    networks:
+    - monitoring
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.24.0
+    container_name: recepio-blackbox-exporter
+    restart: unless-stopped
+    command:
+    - --config.file=/etc/blackbox_exporter/config.yml
+    volumes:
+    - ./monitoring/blackbox-config.yml:/etc/blackbox_exporter/config.yml:ro
+    ports:
+    - 127.0.0.1:9115:9115
+    networks:
+    - monitoring
+    - recepio-network
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+  telegram-bot:
+    build:
+      context: ./scripts/alerting
+      dockerfile: Dockerfile
+    container_name: recepio-telegram-bot
+    restart: unless-stopped
+    environment:
+    - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    - PORT=8080
+    ports:
+    - 127.0.0.1:8082:8080
+    networks:
+    - monitoring
+    labels:
+    - com.centurylinklabs.watchtower.enable=true
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: recepio-watchtower
+    restart: unless-stopped
+    environment:
+    - WATCHTOWER_CLEANUP=true
+    - WATCHTOWER_INCLUDE_RESTARTING=true
+    - WATCHTOWER_POLL_INTERVAL=43200
+    - WATCHTOWER_SCHEDULE=0 0 4 * * *
+    - WATCHTOWER_ROLLING_RESTART=true
+    - WATCHTOWER_NOTIFICATIONS=email
+    - WATCHTOWER_NOTIFICATION_EMAIL_FROM=${WATCHTOWER_EMAIL_FROM:-noreply@recepio.com}
+    - WATCHTOWER_NOTIFICATION_EMAIL_TO=${WATCHTOWER_EMAIL_TO:-admin@recepio.com}
+    - WATCHTOWER_NOTIFICATION_EMAIL_SERVER=${SMTP_SERVER:-smtp.gmail.com}
+    - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PORT=${SMTP_PORT:-587}
+    - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_USER=${SMTP_USER}
+    - WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PASSWORD=${SMTP_PASSWORD}
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+    - monitoring

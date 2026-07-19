@@ -1,0 +1,14 @@
+[Unit]
+Description=Recepio Secrets Backup to Proton Drive
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/recepio-app-v2/apps/api
+ExecStart=/usr/bin/python3 /opt/recepio-app-v2/apps/api/scripts/backup_to_proton.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
