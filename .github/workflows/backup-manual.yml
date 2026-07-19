@@ -67,8 +67,20 @@ jobs:
         run: |
           echo "=== Verifying encrypted file ==="
           file /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg
-          echo "Size: $(stat -c%s /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg) bytes"
-          echo "SHA256: $(sha256sum /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg)"
+          SIZE=$(stat -c%s /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg)
+          echo "Size: $SIZE bytes"
+          
+          # Critical: Verify minimum size (corruption check)
+          if [ "$SIZE" -lt 100 ]; then
+            echo "❌ CRITICAL: Backup too small - likely corrupted!"
+            exit 1
+          fi
+          
+          # Calculate checksum for integrity verification
+          SHA256=$(sha256sum /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg | cut -d' ' -f1)
+          echo "SHA256: $SHA256"
+          echo "BACKUP_SHA256=$SHA256" >> $GITHUB_ENV
+          echo "BACKUP_SIZE=$SIZE" >> $GITHUB_ENV
 
       - name: Commit to repo
         env:
@@ -105,8 +117,13 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Manual backup - ${{ steps.ts.outputs.T }}"
-            git push
-            echo "✅ Pushed successfully"
+            
+            # Retry logic for concurrent pushes
+            for i in 1 2 3 4 5; do
+              git pull --rebase && git push && echo "✅ Pushed successfully" && break
+              echo "Retry $i/5 after conflict..."
+              sleep $((i * 5))
+            done || echo "❌ Failed after 5 retries"
           fi
 
       - name: Summary
@@ -117,4 +134,36 @@ jobs:
           echo ""
           echo "Timestamp: ${{ steps.ts.outputs.T }}"
           echo "Location: manual/${{ steps.ts.outputs.T }}"
+          echo "SHA256: ${{ env.BACKUP_SHA256 }}"
+          echo "Size: ${{ env.BACKUP_SIZE }} bytes"
           echo "URL: https://github.com/RecepioHQ/recepio-backups/tree/master/manual/${{ steps.ts.outputs.T }}"
+
+      - name: Cleanup old backups (keep last 30)
+        run: |
+          echo "=== Cleaning up old backups ==="
+          
+          # List all manual backups
+          cd manual
+          BACKUP_COUNT=$(ls -d */ 2>/dev/null | wc -l)
+          echo "Total backups: $BACKUP_COUNT"
+          
+          # Keep only last 30
+          if [ "$BACKUP_COUNT" -gt 30 ]; then
+            TO_DELETE=$((BACKUP_COUNT - 30))
+            echo "Deleting $TO_DELETE old backups..."
+            
+            ls -dt */ | tail -n +31 | while read dir; do
+              echo "Removing: $dir"
+              rm -rf "$dir"
+            done
+            
+            git config user.name "Cleanup Bot"
+            git config user.email "cleanup@recepio.io"
+            git add -A
+            git commit -m "Cleanup: removed $TO_DELETE old backups"
+            git push
+            
+            echo "✅ Cleanup complete"
+          else
+            echo "✅ No cleanup needed ($BACKUP_COUNT <= 30)"
+          fi
