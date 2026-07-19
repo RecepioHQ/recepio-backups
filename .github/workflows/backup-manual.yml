@@ -46,6 +46,73 @@ jobs:
           ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/app.recepio.io" > /tmp/backup/nginx-app.conf
           ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/admin.recepio.io" > /tmp/backup/nginx-admin.conf
 
+      - name: Backup Chatwoot Database
+        run: |
+          echo "=== Backing up Chatwoot Database ==="
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo docker exec chatwoot-postgres pg_dump -U postgres chatwoot" > /tmp/backup/chatwoot.sql
+          gzip /tmp/backup/chatwoot.sql
+          ls -lh /tmp/backup/chatwoot.sql.gz
+
+      - name: Backup SSL Certificates
+        run: |
+          echo "=== Backing up SSL Certificates ==="
+          mkdir -p /tmp/backup/ssl
+          
+          # Archive all SSL certs
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo tar -czf - -C /etc/letsencrypt ." > /tmp/backup/ssl/letsencrypt.tar.gz
+          
+          # Also backup SSL private keys
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo tar -czf - -C /etc/ssl ." > /tmp/backup/ssl/ssl.tar.gz
+          
+          ls -lh /tmp/backup/ssl/
+
+      - name: Backup Docker Volumes
+        run: |
+          echo "=== Backing up Docker Volumes ==="
+          mkdir -p /tmp/backup/volumes
+          
+          # Recepio PostgreSQL data
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo tar -czf /tmp/recepio-postgres-vol.tar.gz -C /var/lib/docker/volumes/recepio-postgres-data/_data .
+            sudo cat /tmp/recepio-postgres-vol.tar.gz
+          " > /tmp/backup/volumes/recepio-postgres.tar.gz
+          
+          # Redis data
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo tar -czf /tmp/redis-vol.tar.gz -C /var/lib/docker/volumes/infra_redis_data/_data .
+            sudo cat /tmp/redis-vol.tar.gz
+          " > /tmp/backup/volumes/recepio-redis.tar.gz
+          
+          # Grafana data (dashboards)
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo tar -czf /tmp/grafana-vol.tar.gz -C /var/lib/docker/volumes/infra_grafana_data/_data .
+            sudo cat /tmp/grafana-vol.tar.gz
+          " > /tmp/backup/volumes/grafana.tar.gz
+          
+          # Prometheus data
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo tar -czf /tmp/prometheus-vol.tar.gz -C /var/lib/docker/volumes/infra_prometheus_data/_data .
+            sudo cat /tmp/prometheus-vol.tar.gz
+          " > /tmp/backup/volumes/prometheus.tar.gz
+          
+          ls -lh /tmp/backup/volumes/
+
+      - name: Backup Environment Files
+        run: |
+          echo "=== Backing up .env files ==="
+          mkdir -p /tmp/backup/env
+          
+          # All .env files (values will be encrypted)
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo find /opt -name '.env' -o -name '*.env' 2>/dev/null | while read f; do
+              echo \"=== \$f ===\"
+              sudo cat \"\$f\" 2>/dev/null
+              echo ''
+            done
+          " > /tmp/backup/env/all-env-files.txt
+          
+          ls -lh /tmp/backup/env/
+
       - name: Create archive
         run: |
           cd /tmp/backup
@@ -99,8 +166,18 @@ jobs:
           echo "**Timestamp:** $(date -Iseconds)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
           echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
           echo "## Contents" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- Database (PostgreSQL)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Database (Recepio PostgreSQL)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Database (Chatwoot PostgreSQL)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
           echo "- Nginx configs (3 sites)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- SSL Certificates (Let's Encrypt)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Docker Volumes (4 volumes)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Environment Files (.env)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "## Backup Sizes" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Recepio DB: $(du -h /tmp/backup/database.sql.gz | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Chatwoot DB: $(du -h /tmp/backup/chatwoot.sql.gz | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- SSL: $(du -sh /tmp/backup/ssl | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Volumes: $(du -sh /tmp/backup/volumes | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
 
           # Check what we're adding
           echo "=== Files to commit ==="
