@@ -176,6 +176,139 @@ ssh ubuntu@63.181.126.178 "sudo nginx -t && sudo systemctl reload nginx"
 
 ---
 
+## استعادة Docker Volumes
+
+### ⚠️ تحذير هام
+
+```
+استعادة Docker Volumes ستحذف البيانات الحالية!
+تأكد من:
+1. إيقاف الحاويات قبل الاستعادة
+2. عمل نسخة احتياطية من البيانات الحالية
+3. التحقق من توافق الإصدارات
+```
+
+### استعادة Recepio PostgreSQL Volume
+
+```bash
+# 1. إيقاف الحاوية
+ssh ubuntu@63.181.126.178 "docker stop recepio-postgres"
+
+# 2. فك التشفير من النسخة الاحتياطية
+cd recepio-backups/manual/LATEST/
+gpg --decrypt backup_*.tar.gz.gpg | tar -xzf -
+
+# 3. استعادة الـ volume
+ssh ubuntu@63.181.126.178 "
+  # حذف البيانات القديمة
+  sudo rm -rf /var/lib/docker/volumes/recepio-postgres-data/_data/*
+  
+  # نسخ البيانات الجديدة
+  sudo tar -xzf /tmp/recepio-postgres.tar.gz -C /var/lib/docker/volumes/recepio-postgres-data/_data/
+  
+  # تعيين الصلاحيات
+  sudo chown -R 999:999 /var/lib/docker/volumes/recepio-postgres-data/_data
+"
+
+# 4. تشغيل الحاوية
+ssh ubuntu@63.181.126.178 "docker start recepio-postgres"
+
+# 5. التحقق
+sleep 10
+ssh ubuntu@63.181.126.178 "docker exec recepio-postgres pg_isready"
+```
+
+### استعادة Redis Volume
+
+```bash
+# 1. إيقاف Redis
+ssh ubuntu@63.181.126.178 "docker stop recepio-redis"
+
+# 2. استعادة البيانات
+ssh ubuntu@63.181.126.178 "
+  sudo rm -rf /var/lib/docker/volumes/infra_redis_data/_data/*
+  sudo tar -xzf /tmp/recepio-redis.tar.gz -C /var/lib/docker/volumes/infra_redis_data/_data/
+  sudo chown -R 999:999 /var/lib/docker/volumes/infra_redis_data/_data
+"
+
+# 3. تشغيل Redis
+ssh ubuntu@63.181.126.178 "docker start recepio-redis"
+
+# 4. التحقق
+ssh ubuntu@63.181.126.178 "docker exec recepio-redis redis-cli ping"
+# Expected: PONG
+```
+
+### استعادة Grafana Dashboards
+
+```bash
+# 1. إيقاف Grafana
+ssh ubuntu@63.181.126.178 "docker stop recepio-grafana"
+
+# 2. استعادة البيانات
+ssh ubuntu@63.181.126.178 "
+  sudo rm -rf /var/lib/docker/volumes/infra_grafana_data/_data/*
+  sudo tar -xzf /tmp/grafana.tar.gz -C /var/lib/docker/volumes/infra_grafana_data/_data/
+  sudo chown -R 472:472 /var/lib/docker/volumes/infra_grafana_data/_data
+"
+
+# 3. تشغيل Grafana
+ssh ubuntu@63.181.126.178 "docker start recepio-grafana"
+
+# 4. التحقق
+curl http://63.181.126.178:3000/api/health
+# Expected: {"commit":"...","database":"ok","version":"..."}
+```
+
+### استعادة Prometheus Data
+
+```bash
+# 1. إيقاف Prometheus
+ssh ubuntu@63.181.126.178 "docker stop recepio-prometheus"
+
+# 2. استعادة البيانات
+ssh ubuntu@63.181.126.178 "
+  sudo rm -rf /var/lib/docker/volumes/infra_prometheus_data/_data/*
+  sudo tar -xzf /tmp/prometheus.tar.gz -C /var/lib/docker/volumes/infra_prometheus_data/_data/
+  sudo chown -R 9090:9090 /var/lib/docker/volumes/infra_prometheus_data/_data
+"
+
+# 3. تشغيل Prometheus
+ssh ubuntu@63.181.126.178 "docker start recepio-prometheus"
+
+# 4. التحقق
+curl http://63.181.126.178:9090/-/healthy
+# Expected: Prometheus is Healthy.
+```
+
+---
+
+## استعادة Chatwoot Redis
+
+```bash
+# 1. إيقاف Chatwoot Redis
+ssh ubuntu@63.181.126.178 "docker stop chatwoot-redis"
+
+# 2. نسخ ملف dump.rdb
+scp chatwoot-redis/dump.rdb ubuntu@63.181.126.178:/tmp/
+
+# 3. استعادة البيانات
+ssh ubuntu@63.181.126.178 "
+  sudo rm -f /var/lib/docker/volumes/chatwoot_redis-data/_data/dump.rdb
+  sudo cp /tmp/dump.rdb /var/lib/docker/volumes/chatwoot_redis-data/_data/
+  sudo chown 999:999 /var/lib/docker/volumes/chatwoot_redis-data/_data/dump.rdb
+"
+
+# 4. تشغيل Redis
+ssh ubuntu@63.181.126.178 "docker start chatwoot-redis"
+
+# 5. التحقق
+ssh ubuntu@63.181.126.178 "docker exec chatwoot-redis redis-cli ping"
+# Expected: PONG
+```
+
+---
+
 ## استعادة السيرفر كاملاً
 
 ### الخطوة 1: إنشاء سيرفر جديد
