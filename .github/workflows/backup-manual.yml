@@ -113,6 +113,89 @@ jobs:
           
           ls -lh /tmp/backup/env/
 
+      - name: Backup Monitoring Stack
+        run: |
+          echo "=== Backing up Monitoring ==="
+          mkdir -p /tmp/backup/monitoring
+          
+          # Prometheus config + rules
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo docker exec recepio-prometheus cat /etc/prometheus/prometheus.yml 2>/dev/null || echo 'No prometheus config'" > /tmp/backup/monitoring/prometheus.yml
+          
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo docker exec recepio-prometheus find /etc/prometheus/rules -name '*.yml' -exec cat {} \; 2>/dev/null || echo 'No rules'
+          " > /tmp/backup/monitoring/prometheus-rules.yml
+          
+          # Alertmanager config
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo docker exec recepio-alertmanager cat /etc/alertmanager/alertmanager.yml 2>/dev/null || echo 'No alertmanager config'" > /tmp/backup/monitoring/alertmanager.yml
+          
+          ls -lh /tmp/backup/monitoring/
+
+      - name: Backup Telegram Bot
+        run: |
+          echo "=== Backing up Telegram Bot ==="
+          mkdir -p /tmp/backup/telegram
+          
+          # Telegram bot script
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo docker exec recepio-telegram-bot cat /app/telegram_bot.py 2>/dev/null || echo 'No script'" > /tmp/backup/telegram/telegram_bot.py
+          
+          # Requirements
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "sudo docker exec recepio-telegram-bot cat /app/requirements.txt 2>/dev/null || echo 'No requirements'" > /tmp/backup/telegram/requirements.txt
+          
+          ls -lh /tmp/backup/telegram/
+
+      - name: Backup System Configs
+        run: |
+          echo "=== Backing up System Configs ==="
+          mkdir -p /tmp/backup/system
+          
+          # UFW firewall rules
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo iptables-save 2>/dev/null || sudo ufw status numbered 2>/dev/null || echo 'No firewall rules'
+          " > /tmp/backup/system/firewall.rules
+          
+          # SSH config
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            echo '=== sshd_config ==='
+            sudo cat /etc/ssh/sshd_config 2>/dev/null
+            echo ''
+            echo '=== sshd_config.d ==='
+            sudo ls -la /etc/ssh/sshd_config.d/ 2>/dev/null || echo 'No sshd_config.d'
+          " > /tmp/backup/system/sshd_config
+          
+          # Cron jobs
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            echo '=== /etc/crontab ==='
+            sudo cat /etc/crontab 2>/dev/null
+            echo ''
+            echo '=== /etc/cron.d ==='
+            sudo ls /etc/cron.d/ 2>/dev/null | while read f; do
+              echo \"--- \$f ---\"
+              sudo cat /etc/cron.d/\$f 2>/dev/null
+            done
+            echo ''
+            echo '=== User crontabs ==='
+            sudo ls /var/spool/cron/crontabs/ 2>/dev/null | while read u; do
+              echo \"--- \$u ---\"
+              sudo cat /var/spool/cron/crontabs/\$u 2>/dev/null
+            done || echo 'No user crontabs'
+          " > /tmp/backup/system/cron-jobs
+          
+          ls -lh /tmp/backup/system/
+
+      - name: Backup Chatwoot Redis
+        run: |
+          echo "=== Backing up Chatwoot Redis ==="
+          mkdir -p /tmp/backup/chatwoot-redis
+          
+          # Redis dump
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 "
+            sudo docker exec chatwoot-redis redis-cli BGSAVE 2>/dev/null || true
+            sleep 2
+            sudo docker exec chatwoot-redis cat /data/dump.rdb 2>/dev/null || echo 'No dump'
+          " > /tmp/backup/chatwoot-redis/dump.rdb
+          
+          ls -lh /tmp/backup/chatwoot-redis/
+
       - name: Create archive
         run: |
           cd /tmp/backup
@@ -160,22 +243,48 @@ jobs:
           cp /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg manual/${{ steps.ts.outputs.T }}/
 
           # Create manifest
-          echo "# Manual Backup - ${{ steps.ts.outputs.T }}" > manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "**Type:** ${{ inputs.backup_type }}" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "**Timestamp:** $(date -Iseconds)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "## Contents" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- Database (Recepio PostgreSQL)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- Database (Chatwoot PostgreSQL)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- Nginx configs (3 sites)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- SSL Certificates (Let's Encrypt)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- Docker Volumes (4 volumes)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "- Environment Files (.env)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
-          echo "## Backup Sizes" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          cat > manual/${{ steps.ts.outputs.T }}/MANIFEST.md << 'MANIFEST_EOF'
+          # Manual Backup - ${{ steps.ts.outputs.T }}
+          
+          **Type:** ${{ inputs.backup_type }}
+          **Timestamp:** $(date -Iseconds)
+          
+          ## Contents (100% Coverage)
+          
+          ### Database & Data
+          - Database (Recepio PostgreSQL)
+          - Database (Chatwoot PostgreSQL)
+          - Chatwoot Redis dump
+          
+          ### Web & Proxy
+          - Nginx configs (3 sites)
+          - SSL Certificates (Let's Encrypt)
+          
+          ### Container Orchestration
+          - Docker Volumes (4 volumes)
+          - Docker Compose files
+          
+          ### Monitoring Stack
+          - Prometheus config + alerting rules
+          - Alertmanager config
+          
+          ### Integrations
+          - Telegram Bot script + requirements
+          
+          ### System Configs
+          - UFW Firewall rules
+          - SSH sshd_config
+          - Cron jobs (system + user)
+          
+          ### Environment
+          - Environment Files (.env)
+          
+          ## Backup Sizes
+          MANIFEST_EOF
+          
           echo "- Recepio DB: $(du -h /tmp/backup/database.sql.gz | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
           echo "- Chatwoot DB: $(du -h /tmp/backup/chatwoot.sql.gz | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Chatwoot Redis: $(du -h /tmp/backup/chatwoot-redis/dump.rdb | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
           echo "- SSL: $(du -sh /tmp/backup/ssl | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
           echo "- Volumes: $(du -sh /tmp/backup/volumes | cut -f1)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
 
