@@ -12,6 +12,9 @@ on:
           - full
           - database-only
 
+permissions:
+  contents: write
+
 jobs:
   backup-and-push:
     runs-on: ubuntu-latest
