@@ -68,6 +68,8 @@ jobs:
           echo "SHA256: $(sha256sum /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg)"
 
       - name: Commit to repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Create directory for this backup
           mkdir -p manual/${{ steps.ts.outputs.T }}
@@ -76,21 +78,14 @@ jobs:
           cp /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg manual/${{ steps.ts.outputs.T }}/
 
           # Create manifest
-          cat > manual/${{ steps.ts.outputs.T }}/MANIFEST.md << 'MANIFEST_EOF'
-          # Manual Backup - ${{ steps.ts.outputs.T }}
-
-          **Type:** ${{ inputs.backup_type }}
-          **Timestamp:** $(date -Iseconds)
-
-          ## Contents
-          - Database (PostgreSQL)
-          - Nginx configs (3 sites)
-
-          ## Restore
-          ```bash
-          gpg --decrypt backup_${{ steps.ts.outputs.T }}.tar.gz.gpg | tar -xzf -
-          ```
-          MANIFEST_EOF
+          echo "# Manual Backup - ${{ steps.ts.outputs.T }}" > manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "**Type:** ${{ inputs.backup_type }}" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "**Timestamp:** $(date -Iseconds)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "## Contents" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Database (PostgreSQL)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
+          echo "- Nginx configs (3 sites)" >> manual/${{ steps.ts.outputs.T }}/MANIFEST.md
 
           # Check what we're adding
           echo "=== Files to commit ==="
@@ -107,7 +102,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Manual backup - ${{ steps.ts.outputs.T }}"
-            git push origin master
+            git push
             echo "✅ Pushed successfully"
           fi
 
