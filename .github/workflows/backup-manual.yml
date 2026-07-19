@@ -65,18 +65,18 @@ jobs:
           echo "=== Verifying encrypted file ==="
           file /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg
           echo "Size: $(stat -c%s /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg) bytes"
+          echo "SHA256: $(sha256sum /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg)"
 
       - name: Commit to repo
         run: |
-          git config user.name "Backup Bot"
-          git config user.email "backup@recepio.io"
-
           # Create directory for this backup
           mkdir -p manual/${{ steps.ts.outputs.T }}
+
+          # Copy encrypted file
           cp /tmp/backup_${{ steps.ts.outputs.T }}.tar.gz.gpg manual/${{ steps.ts.outputs.T }}/
 
           # Create manifest
-          cat > manual/${{ steps.ts.outputs.T }}/MANIFEST.md << EOF
+          cat > manual/${{ steps.ts.outputs.T }}/MANIFEST.md << 'MANIFEST_EOF'
           # Manual Backup - ${{ steps.ts.outputs.T }}
 
           **Type:** ${{ inputs.backup_type }}
@@ -87,14 +87,29 @@ jobs:
           - Nginx configs (3 sites)
 
           ## Restore
-          \`\`\`bash
+          ```bash
           gpg --decrypt backup_${{ steps.ts.outputs.T }}.tar.gz.gpg | tar -xzf -
-          \`\`\`
-          EOF
+          ```
+          MANIFEST_EOF
 
-          git add -A
-          git commit -m "Manual backup - ${{ steps.ts.outputs.T }}"
-          git push origin master
+          # Check what we're adding
+          echo "=== Files to commit ==="
+          ls -la manual/${{ steps.ts.outputs.T }}/
+
+          # Git config and commit
+          git config user.name "Backup Bot"
+          git config user.email "backup@recepio.io"
+          git add -f manual/${{ steps.ts.outputs.T }}/
+          git status
+
+          # Commit with check
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Manual backup - ${{ steps.ts.outputs.T }}"
+            git push origin master
+            echo "✅ Pushed successfully"
+          fi
 
       - name: Summary
         run: |
