@@ -7,6 +7,9 @@
 # السماح فقط بالملفات المشفرة والملف الشخصي
 !.gitignore
 !README.md
+!RESTORE-GUIDE.md
+!AUDIT-REPORT.md
+!secrets-template.md
 !encrypt-backup.sh
 !decrypt-backup.sh
 !restore-backup.sh
