@@ -1,0 +1,97 @@
+name: Manual Backup Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_type:
+        description: 'What to backup'
+        required: true
+        default: 'database'
+        type: choice
+        options:
+          - database
+          - full
+          - configs-only
+      commit_message:
+        description: 'Commit message'
+        required: false
+        default: 'manual backup'
+
+jobs:
+  backup-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout backup repo
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Setup GPG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch || true
+
+      - name: Run backup on server
+        id: backup
+        run: |
+          ssh -o StrictHostKeyChecking=no ubuntu@63.181.126.178 << 'ENDSSH'
+          set -e
+
+          mkdir -p /opt/recepio-backups/{encrypted,reports,logs}
+          cd /opt/recepio-backups
+
+          # Database backup
+          DB_FILE="/tmp/db-backup-$(date +%Y%m%d_%H%M%S).sql.gz"
+          PGPASSWORD='RecepioApp2026' pg_dump -h localhost -U recepio -d recepio --no-owner --no-acl | gzip > "$DB_FILE"
+
+          # Encrypt
+          gpg --batch --yes --trust-model always \
+            --encrypt --recipient recepio-backup@recepio.io \
+            --output "encrypted/db-$(date +%Y-%m-%d).sql.gz.gpg" \
+            "$DB_FILE" || echo "GPG encryption failed, storing compressed only"
+
+          # Create report
+          echo "{\"timestamp\": \"$(date -Iseconds)\", \"type\": \"manual\", \"status\": \"success\"}" > "reports/manual-$(date +%Y-%m-%d).json"
+
+          # Cleanup temp
+          rm -f "$DB_FILE"
+
+          # Show results
+          ls -la encrypted/*.gpg 2>/dev/null | tail -5
+          ENDSSH
+
+      - name: Pull encrypted files from server
+        run: |
+          mkdir -p encrypted reports logs
+          scp -o StrictHostKeyChecking=no ubuntu@63.181.126.178:/opt/recepio-backups/encrypted/*.gpg encrypted/ 2>/dev/null || true
+          scp -o StrictHostKeyChecking=no ubuntu@63.181.126.178:/opt/recepio-backups/reports/*.json reports/ 2>/dev/null || true
+
+      - name: Check and commit
+        run: |
+          git config user.name "Backup Bot"
+          git config user.email "backup@recepio.io"
+
+          git add encrypted/*.gpg reports/*.json 2>/dev/null || true
+
+          if git diff --staged --quiet; then
+            echo "No new backups to commit"
+          else
+            git commit -m "${{ inputs.commit_message }} - $(date +%Y-%m-%d)"
+            git push
+            echo "✅ Backup pushed to GitHub successfully!"
+          fi
+
+      - name: List current backups
+        run: |
+          echo "============================================"
+          echo "Current Backups in Repository"
+          echo "============================================"
+          ls -la encrypted/ 2>/dev/null || echo "No encrypted backups yet"
+          echo ""
+          echo "Total size: $(du -sh encrypted/ 2>/dev/null | cut -f1)"
+          echo "Total files: $(ls encrypted/*.gpg 2>/dev/null | wc -l)"

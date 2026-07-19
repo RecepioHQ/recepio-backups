@@ -1,0 +1,48 @@
+#recepio-backups/.gitignore
+# الملفات المشفرة فقط تُرفع (لا نرفع الملفات غير المشفرة أبداً)
+
+# تجاهل كل شيء افتراضياً
+*
+
+# السماح فقط بالملفات المشفرة والملف الشخصي
+!.gitignore
+!README.md
+!encrypt-backup.sh
+!decrypt-backup.sh
+!restore-backup.sh
+!backup-automated.sh
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+
+# المجلدات المشفرة
+!encrypted/
+encrypted/*
+!encrypted/*.gpg
+!encrypted/*.enc
+
+# ملفات المفاتيح العامة فقط (ليست الخاصة)
+!keys/
+keys/*
+!keys/public-key.asc
+!keys/backup-key.pub
+
+# التقارير
+!reports/
+reports/*
+!reports/*.json
+!reports/*.txt
+
+# السجلات
+!logs/
+logs/*
+!logs/backup-*.log
+
+# لا نرفع أبداً
+*.env
+*.key
+*.pem
+*.p12
+secrets/
+private/
+raw/

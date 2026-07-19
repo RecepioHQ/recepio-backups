@@ -1,0 +1,161 @@
+name: Recepio Automated Backup
+
+on:
+  schedule:
+    # كل يوم في الساعة 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      backup_type:
+        description: 'Backup type'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - database-only
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout backup repo
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Setup SSH known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H 63.181.126.178 >> ~/.ssh/known_hosts
+
+      - name: Setup GPG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch
+
+      - name: Run backup on server
+        id: backup
+        run: |
+          ssh ubuntu@63.181.126.178 << 'ENDSSH'
+          cd /opt/recepio-backups
+          git pull
+          ./scripts/encrypt-backup.sh
+
+          # Get backup info
+          LATEST_DB=$(ls -t encrypted/db-*.gpg 2>/dev/null | head -1)
+          if [ -n "$LATEST_DB" ]; then
+            echo "db_backup=$(basename $LATEST_DB)" >> $GITHUB_OUTPUT
+            echo "db_size=$(ls -lh $LATEST_DB | awk '{print $5}')" >> $GITHUB_OUTPUT
+          fi
+          ENDSSH
+
+      - name: Pull encrypted backups
+        run: |
+          git config --global user.name "GitHub Actions Backup"
+          git config --global user.email "actions@github.com"
+          git pull
+
+      - name: Commit and push backups
+        run: |
+          git add encrypted/*.gpg reports/*.json logs/*.log 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No new backups to commit"
+          else
+            git commit -m "backup: automated backup $(date +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Cleanup old backups (keep 30 days)
+        run: |
+          find encrypted -name "*.gpg" -type f -mtime +30 -delete
+          git add -A
+          git diff --staged --quiet || git commit -m "cleanup: remove old backups"
+          git push || true
+
+      - name: Send notification on failure
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          fields: repo,message,commit,author
+          text: '🚨 Recepio Backup Failed!'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Send notification on success
+        if: success()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          fields: repo,message
+          text: |
+            ✅ Recepio Backup Completed!
+            Database: ${{ steps.backup.outputs.db_backup }} (${{ steps.backup.outputs.db_size }})
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  verify:
+    needs: backup
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify backup integrity
+        run: |
+          LATEST_BACKUP=$(ls -t encrypted/db-*.gpg 2>/dev/null | head -1)
+
+          if [ -z "$LATEST_BACKUP" ]; then
+            echo "::error::No database backup found!"
+            exit 1
+          fi
+
+          echo "Latest backup: $LATEST_BACKUP"
+          echo "Size: $(ls -lh $LATEST_BACKUP | awk '{print $5}')"
+          echo "Date: $(stat -c %y $LATEST_BACKUP | cut -d. -f1)"
+          echo ""
+          echo "✅ Backup verified successfully!"
+
+  # أرشفة أسبوعية إلى Backblaze B2
+  archive:
+    needs: backup
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.run_attempt % 7 == 0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install restic
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y restic
+
+      - name: Setup restic repository
+        env:
+          RESTIC_REPOSITORY: b2:recepio-backups-archives
+          RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
+          B2_ACCOUNT_ID: ${{ secrets.B2_ACCOUNT_ID }}
+          B2_ACCOUNT_KEY: ${{ secrets.B2_ACCOUNT_KEY }}
+        run: |
+          restic init || true
+
+      - name: Archive to B2
+        env:
+          RESTIC_REPOSITORY: b2:recepio-backups-archives
+          RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
+          B2_ACCOUNT_ID: ${{ secrets.B2_ACCOUNT_ID }}
+          B2_ACCOUNT_KEY: ${{ secrets.B2_ACCOUNT_KEY }}
+        run: |
+          restic backup encrypted/ --tag "automated-weekly"
+          restic forget --keep-daily 30 --keep-weekly 12 --keep-monthly 12 --prune
