@@ -1,0 +1,189 @@
+name: Hourly Full Backup
+
+on:
+  schedule:
+    # كل ساعة - "بدي كل ساعه اجباري"
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force backup even if no changes'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  backup-database:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Setup SSH known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H 63.181.126.178 >> ~/.ssh/known_hosts
+
+      - name: Get timestamp
+        id: timestamp
+        run: echo "TIMESTAMP=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Create backup directory
+        run: |
+          mkdir -p /tmp/backup
+
+      - name: Backup PostgreSQL Database
+        run: |
+          echo "=== Backing up Database ==="
+          ssh ubuntu@63.181.126.178 "sudo docker exec recepio-postgres pg_dump -U recepio recepio" > /tmp/backup/database.sql
+
+          # ضغط
+          gzip /tmp/backup/database.sql
+
+          # عرض الحجم
+          ls -lh /tmp/backup/database.sql.gz
+
+      - name: Backup Nginx Configs
+        run: |
+          echo "=== Backing up Nginx ==="
+          ssh ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/api.recepio.io" > /tmp/backup/nginx-api.conf
+          ssh ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/app.recepio.io" > /tmp/backup/nginx-app.conf
+          ssh ubuntu@63.181.126.178 "sudo cat /etc/nginx/sites-available/admin.recepio.io" > /tmp/backup/nginx-admin.conf
+          ssh ubuntu@63.181.126.178 "sudo cat /etc/nginx/nginx.conf" > /tmp/backup/nginx-main.conf
+
+      - name: Backup Systemd Services
+        run: |
+          echo "=== Backing up Systemd ==="
+          ssh ubuntu@63.181.126.178 "sudo cat /etc/systemd/system/recepio-backup.service" > /tmp/backup/recepio-backup.service
+          ssh ubuntu@63.181.126.178 "sudo cat /etc/systemd/system/recepio-backup.timer" > /tmp/backup/recepio-backup.timer
+
+      - name: Backup Docker Compose
+        run: |
+          echo "=== Backing up Docker Compose ==="
+          ssh ubuntu@63.181.126.178 "sudo cat /opt/recepio/recepio-app-v2/infra/docker-compose.yml" > /tmp/backup/docker-compose.yml
+          ssh ubuntu@63.181.126.178 "sudo cat /opt/recepio/recepio-app-v2/infra/docker-compose.prod.yml" > /tmp/backup/docker-compose.prod.yml
+          ssh ubuntu@63.181.126.178 "sudo cat /opt/recepio/recepio-app-v2/infra/docker-compose.monitoring.yml" > /tmp/backup/docker-compose.monitoring.yml
+
+      - name: Backup .env structure (without secrets)
+        run: |
+          echo "=== Backing up .env structure ==="
+          ssh ubuntu@63.181.126.178 "sudo cat /opt/recepio/recepio-app-v2/infra/.env.example 2>/dev/null || echo '# No .env.example'" > /tmp/backup/env.example
+
+      - name: Create archive
+        run: |
+          echo "=== Creating Archive ==="
+          cd /tmp/backup
+
+          # إنشاء tarball
+          tar -czf ../backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz *
+
+          # عرض الحجم
+          ls -lh ../backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz
+
+      - name: Import GPG Key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+
+      - name: Encrypt backup
+        run: |
+          echo "=== Encrypting Backup ==="
+          gpg --batch --yes --trust-model always \
+              --encrypt --recipient backup@recepio.io \
+              --output /tmp/backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz.gpg \
+              /tmp/backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz
+
+          ls -lh /tmp/backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz.gpg
+
+      - name: Checkout backups repo
+        uses: actions/checkout@v4
+        with:
+          repository: RecepioHQ/recepio-backups
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: backups-repo
+
+      - name: Commit encrypted backup
+        run: |
+          cd backups-repo
+
+          # إنشاء مجلد للساعة
+          HOUR=$(date +%Y%m%d_%H)
+          mkdir -p "hourly/$HOUR"
+
+          # نسخ الملف المشفر
+          cp /tmp/backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz.gpg "hourly/$HOUR/"
+
+          # إنشاء manifest للنسخة
+          cat > "hourly/$HOUR/MANIFEST.md" << EOF
+          # Backup - ${{ steps.timestamp.outputs.TIMESTAMP }}
+
+          **Timestamp:** $(date -Iseconds)
+          **Trigger:** ${{ github.event_name }}
+
+          ## Contents
+          - Database (PostgreSQL)
+          - Nginx configs (3 sites)
+          - Systemd services
+          - Docker Compose files
+          - .env structure
+
+          ## Encrypted File
+          - backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz.gpg
+
+          ## To Restore
+          \`\`\`bash
+          gpg --decrypt backup_${{ steps.timestamp.outputs.TIMESTAMP }}.tar.gz.gpg | tar -xzf -
+          \`\`\`
+          EOF
+
+          # Git config
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          # إضافة
+          git add -A
+
+          # Commit
+          git commit -m "Hourly backup - ${{ steps.timestamp.outputs.TIMESTAMP }}" || echo "No changes"
+
+          # Push
+          git push origin master
+
+      - name: Cleanup old backups (keep last 24 hours)
+        run: |
+          cd backups-repo
+
+          # حذف النسخ الأقدم من 24 ساعة
+          find hourly -type d -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+
+          git add -A
+          git commit -m "Cleanup old hourly backups" || echo "No cleanup needed"
+          git push origin master
+
+      - name: Notify success
+        run: |
+          echo "✅ Hourly backup completed: ${{ steps.timestamp.outputs.TIMESTAMP }}"
+          echo "📦 Location: https://github.com/RecepioHQ/recepio-backups/tree/master/hourly"
+
+  backup-complete:
+    needs: backup-database
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Summary
+        run: |
+          echo "============================================"
+          echo "✅ HOURLY BACKUP COMPLETE"
+          echo "============================================"
+          echo ""
+          echo "Timestamp: $(date -Iseconds)"
+          echo "Repository: https://github.com/RecepioHQ/recepio-backups"
+          echo ""
+          echo "All backups encrypted with GPG RSA-4096"
+          echo "Retention: 24 hours"
+          echo "============================================"

@@ -1,0 +1,72 @@
+name: Backup - Every 5 Minutes
+
+on:
+  schedule:
+    # كل 5 دقائق - أكثر توازناً
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  instant-backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H 63.181.126.178 >> ~/.ssh/known_hosts
+
+      - name: Timestamp
+        id: ts
+        run: echo "T=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Quick Database Snapshot
+        run: |
+          ssh ubuntu@63.181.126.178 "sudo docker exec recepio-postgres pg_dump -U recepio recepio" | gzip > /tmp/db.sql.gz
+
+      - name: Import GPG
+        run: echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+
+      - name: Encrypt
+        run: |
+          gpg --batch --yes --trust-model always \
+              --encrypt --recipient backup@recepio.io \
+              --output /tmp/backup_${{ steps.ts.outputs.T }}.gpg \
+              /tmp/db.sql.gz
+
+      - name: Push to GitHub
+        run: |
+          git clone https://github.com/RecepioHQ/recepio-backups.git
+          cd recepio-backups
+
+          mkdir -p realtime/$(date +%Y%m%d)
+          cp /tmp/backup_${{ steps.ts.outputs.T }}.gpg realtime/$(date +%Y%m%d)/
+
+          # Create/update latest pointer
+          echo "backup_${{ steps.ts.outputs.T }}.gpg" > realtime/LATEST
+
+          git config user.name "Auto Backup"
+          git config user.email "backup@recepio.io"
+          git add -A
+          git commit -m "Realtime backup - ${{ steps.ts.outputs.T }}"
+          git push origin master
+
+      - name: Cleanup (keep last hour only)
+        run: |
+          cd recepio-backups
+          find realtime -type f -mmin +60 -delete 2>/dev/null || true
+          git add -A
+          git commit -m "Cleanup" || true
+          git push origin master
+
+      - name: Done
+        run: echo "✅ Backup: ${{ steps.ts.outputs.T }}"
