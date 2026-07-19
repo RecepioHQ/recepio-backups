@@ -167,3 +167,72 @@ jobs:
           else
             echo "✅ No cleanup needed ($BACKUP_COUNT <= 30)"
           fi
+
+  notify-success:
+    needs: backup-and-push
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Send success notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: 'success'
+          text: |
+            ✅ Recepio Backup SUCCESS
+           ━━━━━━━━━━━━━━━━━━━━
+            📦 Type: ${{ github.event.inputs.backup_type }}
+            🕐 Time: ${{ github.event.repository.updated_at }}
+            🔗 View: ${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true
+
+      - name: Log success
+        run: |
+          echo "✅ Backup completed successfully at $(date -Iseconds)"
+
+  notify-failure:
+    needs: backup-and-push
+    runs-on: ubuntu-latest
+    if: failure()
+    
+    steps:
+      - name: Send failure alert
+        uses: 8398a7/action-slack@v3
+        with:
+          status: 'failure'
+          text: |
+            🚨 CRITICAL: Recepio Backup FAILED
+           ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            ❌ Backup Type: ${{ github.event.inputs.backup_type }}
+            🕐 Time: $(date -Iseconds)
+            🔗 Logs: ${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}
+            
+            ⚠️ ACTION REQUIRED: Check logs immediately!
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true
+
+      - name: Create issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Backup Failed - ' + new Date().toISOString(),
+              body: `
+            ## Backup Failure Details
+            
+            - **Run ID**: ${{ github.run_id }}
+            - **Type**: ${{ github.event.inputs.backup_type }}
+            - **Time**: ${new Date().toISOString()}
+            - **Logs**: ${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}
+            
+            ## Action Required
+            1. Check the workflow logs
+            2. Verify database connectivity
+            3. Verify GPG key is valid
+            4. Manually trigger backup if needed
+              `,
+              labels: ['backup', 'critical', 'automated']
+            })
