@@ -1,0 +1,47 @@
+name: Export B2 Creds
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import GPG public key
+        run: |
+          gpg --import --batch keys/recepio-backup-public.asc
+          gpg --list-keys | grep -i recepio
+
+      - name: Encrypt B2 credentials
+        env:
+          B2_ACCOUNT_ID: ${{ secrets.B2_ACCOUNT_ID }}
+          B2_ACCOUNT_KEY: ${{ secrets.B2_ACCOUNT_KEY }}
+        run: |
+          printf 'B2_KEY_ID=%s\nB2_APPLICATION_KEY=%s\nB2_BUCKET=recepio-server-backups\nB2_PREFIX=recepio/db\n' "$B2_ACCOUNT_ID" "$B2_ACCOUNT_KEY" > /tmp/b2-creds.env
+
+          echo "Credential file lines:"
+          wc -l /tmp/b2-creds.env
+
+          gpg --batch --yes --trust-model always \
+            --recipient 5029865814F77EC5 \
+            --encrypt --armor \
+            --output /tmp/b2-creds-encrypted.asc /tmp/b2-creds.env
+
+          ls -la /tmp/b2-creds-encrypted.asc
+          echo "First 5 lines of encrypted output:"
+          head -5 /tmp/b2-creds-encrypted.asc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: b2-creds-export
+          path: /tmp/b2-creds-encrypted.asc
+          retention-days: 1
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/b2-creds.env /tmp/b2-creds-encrypted.asc
