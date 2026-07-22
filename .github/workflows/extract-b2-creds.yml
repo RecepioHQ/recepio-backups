@@ -16,10 +16,13 @@ jobs:
           gpg --list-keys
 
       - name: Prepare and encrypt B2 credentials
+        env:
+          B2_ACCOUNT_ID: ${{ secrets.B2_ACCOUNT_ID }}
+          B2_ACCOUNT_KEY: ${{ secrets.B2_ACCOUNT_KEY }}
         run: |
-          cat > /tmp/b2-creds.env << 'EOF'
-B2_KEY_ID=${{ secrets.B2_ACCOUNT_ID }}
-B2_APPLICATION_KEY=${{ secrets.B2_ACCOUNT_KEY }}
+          cat > /tmp/b2-creds.env << EOF
+B2_KEY_ID=${B2_ACCOUNT_ID}
+B2_APPLICATION_KEY=${B2_ACCOUNT_KEY}
 B2_BUCKET=recepio-server-backups
 B2_PREFIX=recepio/db
 EOF
