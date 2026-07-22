@@ -1,0 +1,59 @@
+name: Debug B2 Creds
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import GPG public key
+        run: |
+          gpg --import --batch keys/recepio-backup-public.asc
+          gpg --list-keys | grep -i recepio
+
+      - name: Debug credential lengths
+        env:
+          B2_ACCOUNT_ID: ${{ secrets.B2_ACCOUNT_ID }}
+          B2_ACCOUNT_KEY: ${{ secrets.B2_ACCOUNT_KEY }}
+        run: |
+          echo "B2_ACCOUNT_ID length: ${#B2_ACCOUNT_ID}"
+          echo "B2_ACCOUNT_KEY length: ${#B2_ACCOUNT_KEY}"
+          echo "B2_ACCOUNT_ID first 4 chars: ${B2_ACCOUNT_ID:0:4}"
+          echo "B2_ACCOUNT_KEY first 4 chars: ${B2_ACCOUNT_KEY:0:4}"
+          echo "B2_ACCOUNT_ID last 4 chars: ${B2_ACCOUNT_ID: -4}"
+          echo "B2_ACCOUNT_KEY last 4 chars: ${B2_ACCOUNT_KEY: -4}"
+
+      - name: Encrypt B2 credentials (raw values)
+        env:
+          B2_ACCOUNT_ID: ${{ secrets.B2_ACCOUNT_ID }}
+          B2_ACCOUNT_KEY: ${{ secrets.B2_ACCOUNT_KEY }}
+        run: |
+          printf 'B2_KEY_ID=%s\nB2_APPLICATION_KEY=%s\nB2_BUCKET=recepio-server-backups\nB2_PREFIX=recepio/db\n' "$B2_ACCOUNT_ID" "$B2_ACCOUNT_KEY" > /tmp/b2-creds.env
+
+          echo "Lines in file:"
+          wc -l /tmp/b2-creds.env
+          echo "File size:"
+          wc -c /tmp/b2-creds.env
+
+          gpg --batch --yes --trust-model always \
+            --recipient 5029865814F77EC5 \
+            --encrypt --armor \
+            --output /tmp/b2-creds-encrypted.asc /tmp/b2-creds.env
+
+          ls -la /tmp/b2-creds-encrypted.asc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: b2-creds-debug
+          path: /tmp/b2-creds-encrypted.asc
+          retention-days: 1
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/b2-creds.env /tmp/b2-creds-encrypted.asc
