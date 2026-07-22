@@ -1,0 +1,37 @@
+name: Extract B2 Credentials (One-time)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare B2 credentials file
+        run: |
+          cat > /tmp/b2-creds.env << EOF
+          B2_KEY_ID=${{ secrets.B2_ACCOUNT_ID }}
+          B2_APPLICATION_KEY=${{ secrets.B2_ACCOUNT_KEY }}
+          B2_BUCKET=recepio-server-backups
+          B2_PREFIX=recepio/db
+          EOF
+          cat /tmp/b2-creds.env | head -2 | sed 's/=.*/=<REDACTED>/'
+
+      - name: Encrypt with GPG symmetric
+        run: |
+          gpg --batch --yes --passphrase "${{ secrets.RESTIC_PASSWORD }}" \
+            --symmetric --cipher-algo AES256 \
+            --output /tmp/b2-creds.env.gpg /tmp/b2-creds.env
+          ls -la /tmp/b2-creds.env.gpg
+
+      - name: Upload encrypted artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: b2-creds-encrypted
+          path: /tmp/b2-creds.env.gpg
+          retention-days: 1
+
+      - name: Cleanup
+        run: |
+          rm -f /tmp/b2-creds.env /tmp/b2-creds.env.gpg
+          echo "Done. Download artifact 'b2-creds-encrypted' and decrypt with RESTIC_PASSWORD."
